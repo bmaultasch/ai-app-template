@@ -7,6 +7,11 @@ TEMPLATE_REPO="bmaultasch/ai-app-template"
 SUPABASE_ORG=""  # filled automatically
 DOPPLER_CONFIG="prd"
 export NODE_EXTRA_CA_CERTS="${NODE_EXTRA_CA_CERTS:-/Users/brandon/zcert/zscaler.pem}"
+export SUPABASE_ACCESS_TOKEN="${SUPABASE_ACCESS_TOKEN:?Set SUPABASE_ACCESS_TOKEN before running (from supabase.com/dashboard/account/tokens)}"
+
+# Vercel CLI ignores NODE_EXTRA_CA_CERTS behind Zscaler — use token + TLS bypass for Vercel commands only
+VERCEL_TOKEN="${VERCEL_TOKEN:-}"
+vcmd() { NODE_TLS_REJECT_UNAUTHORIZED=0 vercel "$@" --token "$VERCEL_TOKEN"; }
 
 # ─── Colors ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -88,14 +93,14 @@ cd "$APP_DIR"
 # ═══════════════════════════════════════════════════════════════════════════════
 info "Phase 3: Setting up Supabase..."
 
-# Get org ID
-SUPABASE_ORG=$(supabase orgs list 2>/dev/null | head -n 1 | awk '{print $1}' || true)
+# Get org ID (skip header rows, grab first org)
+SUPABASE_ORG=$(supabase orgs list 2>/dev/null | grep -oE '[a-z]{20}' | head -1 || true)
 if [[ -z "$SUPABASE_ORG" ]]; then
   fail "No Supabase org found. Run: supabase login"
 fi
 
-# Check if project exists
-EXISTING_PROJECT=$(supabase projects list 2>/dev/null | grep -w "$APP_NAME" | awk '{print $1}' || true)
+# Check if project exists (match by name, extract reference ID)
+EXISTING_PROJECT=$(supabase projects list 2>/dev/null | grep -w "$APP_NAME" | grep -oE '[a-z]{20}' | head -1 || true)
 
 if [[ -n "$EXISTING_PROJECT" ]]; then
   SUPABASE_REF="$EXISTING_PROJECT"
@@ -106,12 +111,12 @@ else
     --org-id "$SUPABASE_ORG" \
     --db-password "$(openssl rand -base64 24)" \
     --region us-east-1 2>&1)
-  # Extract ref from output
+  # Extract ref from output or project list
   SUPABASE_REF=$(echo "$CREATE_OUTPUT" | grep -oE '[a-z]{20}' | head -1 || true)
   if [[ -z "$SUPABASE_REF" ]]; then
-    # Try to get it from project list
-    sleep 5
-    SUPABASE_REF=$(supabase projects list 2>/dev/null | grep -w "$APP_NAME" | awk '{print $1}' || true)
+    # Wait for project to appear in list
+    sleep 10
+    SUPABASE_REF=$(supabase projects list 2>/dev/null | grep -w "$APP_NAME" | grep -oE '[a-z]{20}' | head -1 || true)
   fi
   if [[ -z "$SUPABASE_REF" ]]; then
     fail "Could not determine Supabase project ref. Check: supabase projects list"
@@ -181,20 +186,21 @@ fi
 # ═══════════════════════════════════════════════════════════════════════════════
 info "Phase 5: Setting up Vercel..."
 
-# Check for VERCEL_TOKEN
-VERCEL_TOKEN=$(doppler secrets get VERCEL_TOKEN --project "$APP_NAME" --config "$DOPPLER_CONFIG" --plain 2>/dev/null || true)
+# Check for VERCEL_TOKEN (from env, then Doppler)
 if [[ -z "$VERCEL_TOKEN" ]]; then
-  # Try a global/shared Doppler config
+  VERCEL_TOKEN=$(doppler secrets get VERCEL_TOKEN --project "$APP_NAME" --config "$DOPPLER_CONFIG" --plain 2>/dev/null || true)
+fi
+if [[ -z "$VERCEL_TOKEN" ]]; then
   VERCEL_TOKEN=$(doppler secrets get VERCEL_TOKEN --plain 2>/dev/null || true)
 fi
 if [[ -z "$VERCEL_TOKEN" ]]; then
-  warn "VERCEL_TOKEN not found in Doppler."
+  warn "VERCEL_TOKEN not found. Set it: export VERCEL_TOKEN=xxx"
   warn "Create one at: https://vercel.com/account/tokens"
-  warn "Then run: doppler secrets set VERCEL_TOKEN=xxx --project $APP_NAME --config $DOPPLER_CONFIG"
+  fail "Cannot continue without VERCEL_TOKEN"
 fi
 
 # Link Vercel project
-vercel link --yes 2>/dev/null && ok "Vercel project linked" || warn "Vercel link failed — run 'vercel link' manually"
+vcmd link --yes 2>/dev/null && ok "Vercel project linked" || warn "Vercel link failed — run 'vercel link' manually"
 
 # Push env vars to Vercel
 if [[ -f .vercel/project.json ]]; then
@@ -205,7 +211,7 @@ if [[ -f .vercel/project.json ]]; then
   push_vercel_env() {
     local key="$1" value="$2"
     # Remove existing, then add (idempotent)
-    echo "$value" | vercel env add "$key" production --force 2>/dev/null || true
+    echo "$value" | vcmd env add "$key" production --force 2>/dev/null || true
   }
 
   push_vercel_env "NEXT_PUBLIC_SUPABASE_URL" "$SUPABASE_URL"
@@ -240,7 +246,7 @@ pnpm install && ok "Dependencies installed" || fail "pnpm install failed"
 
 # Try direct deploy, fall back to push-to-main
 info "Deploying to Vercel..."
-if vercel deploy --prod --yes 2>/dev/null; then
+if vcmd deploy --prod --yes 2>/dev/null; then
   ok "Deployed to Vercel"
 else
   warn "Direct Vercel deploy failed (Zscaler?). Deploying via GitHub Actions..."
