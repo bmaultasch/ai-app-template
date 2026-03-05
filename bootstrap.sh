@@ -11,7 +11,8 @@ export SUPABASE_ACCESS_TOKEN="${SUPABASE_ACCESS_TOKEN:?Set SUPABASE_ACCESS_TOKEN
 
 # Vercel CLI ignores NODE_EXTRA_CA_CERTS behind Zscaler — use token + TLS bypass for Vercel commands only
 VERCEL_TOKEN="${VERCEL_TOKEN:-}"
-vcmd() { NODE_TLS_REJECT_UNAUTHORIZED=0 vercel "$@" --token "$VERCEL_TOKEN"; }
+VERCEL_SCOPE="${VERCEL_SCOPE:-}"
+vcmd() { NODE_TLS_REJECT_UNAUTHORIZED=0 vercel "$@" --token "$VERCEL_TOKEN" ${VERCEL_SCOPE:+--scope "$VERCEL_SCOPE"} 2>&1; }
 
 # ─── Colors ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -124,6 +125,11 @@ else
   ok "Created Supabase project (ref: $SUPABASE_REF)"
 fi
 
+# Set project_id in config.toml so supabase link works
+if [[ -f supabase/config.toml ]]; then
+  sed -i '' "s/^project_id = .*/project_id = \"$APP_NAME\"/" supabase/config.toml
+fi
+
 # Link locally
 supabase link --project-ref "$SUPABASE_REF" 2>/dev/null || true
 ok "Linked Supabase project"
@@ -199,8 +205,16 @@ if [[ -z "$VERCEL_TOKEN" ]]; then
   fail "Cannot continue without VERCEL_TOKEN"
 fi
 
+# Auto-detect Vercel scope/team if not set
+if [[ -z "$VERCEL_SCOPE" ]]; then
+  VERCEL_SCOPE=$(NODE_TLS_REJECT_UNAUTHORIZED=0 vercel teams ls --token "$VERCEL_TOKEN" 2>/dev/null | tail -1 | awk '{print $1}' || true)
+  if [[ -n "$VERCEL_SCOPE" ]]; then
+    ok "Detected Vercel scope: $VERCEL_SCOPE"
+  fi
+fi
+
 # Link Vercel project
-vcmd link --yes 2>/dev/null && ok "Vercel project linked" || warn "Vercel link failed — run 'vercel link' manually"
+vcmd link --yes && ok "Vercel project linked" || warn "Vercel link failed — run 'vercel link' manually"
 
 # Push env vars to Vercel
 if [[ -f .vercel/project.json ]]; then
