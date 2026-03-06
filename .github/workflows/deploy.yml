@@ -11,19 +11,33 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    if: ${{ secrets.VERCEL_TOKEN != '' }}
     steps:
+      - name: Check for Vercel token
+        run: |
+          if [ -z "${{ secrets.VERCEL_TOKEN }}" ]; then
+            echo "VERCEL_TOKEN not set — skipping deploy (expected for template repo)"
+            exit 0
+          fi
+          echo "has_token=true" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v4
+        if: env.has_token == 'true'
 
       - uses: pnpm/action-setup@v4
+        if: env.has_token == 'true'
 
       - uses: actions/setup-node@v4
+        if: env.has_token == 'true'
         with:
           node-version: 22
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+        if: env.has_token == 'true'
 
       - run: npx vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+        if: env.has_token == 'true'
       - run: npx vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+        if: env.has_token == 'true'
       - run: npx vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
+        if: env.has_token == 'true'
