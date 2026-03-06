@@ -164,7 +164,7 @@ doppler projects create "$APP_NAME" 2>/dev/null && ok "Created Doppler project" 
 # Set up config
 doppler setup --project "$APP_NAME" --config "$DOPPLER_CONFIG" --no-interactive 2>/dev/null || true
 
-# Push secrets
+# Push project-specific secrets
 info "Setting Doppler secrets..."
 SECRETS_ARGS=(
   "NEXT_PUBLIC_SUPABASE_URL=${SUPABASE_URL}"
@@ -180,12 +180,15 @@ doppler secrets set "${SECRETS_ARGS[@]}" \
   && ok "Doppler secrets configured" \
   || warn "Could not set some Doppler secrets — check manually"
 
-# Check for API keys
-info "Checking for AI API keys in Doppler..."
-EXISTING_OPENAI=$(doppler secrets get OPENAI_API_KEY --project "$APP_NAME" --config "$DOPPLER_CONFIG" --plain 2>/dev/null || true)
-if [[ -z "$EXISTING_OPENAI" || "$EXISTING_OPENAI" == "" ]]; then
-  warn "OPENAI_API_KEY not set. Run: doppler secrets set OPENAI_API_KEY=sk-xxx --project $APP_NAME --config $DOPPLER_CONFIG"
-fi
+# Copy global keys from shared-secrets into this project
+info "Copying global keys from shared-secrets..."
+for key in OPENAI_API_KEY ANTHROPIC_API_KEY VERCEL_TOKEN SUPABASE_ACCESS_TOKEN NODE_EXTRA_CA_CERTS; do
+  val=$(doppler secrets get "$key" --project shared-secrets --config prd --plain 2>/dev/null || true)
+  if [[ -n "$val" ]]; then
+    doppler secrets set "${key}=${val}" --project "$APP_NAME" --config "$DOPPLER_CONFIG" 2>/dev/null || true
+  fi
+done
+ok "Global keys copied"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Phase 5: Vercel Project
